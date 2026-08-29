@@ -13,6 +13,27 @@ class LegacyImportRequest(BaseModel):
     content_base64: str
 
 
+class CustomerCreate(BaseModel):
+    id: str
+    name: str
+    sales_terms: str | None = None
+    credit_limit: Decimal | None = None
+    tax_treatment: str | None = None
+    state: Literal["active", "deleted"] = "active"
+
+
+class ItemCreate(BaseModel):
+    id: str
+    classification: str
+    pricing: Decimal | None = None
+    lot_rule: str | None = None
+    warehouse: str | None = None
+    tax_category: str | None = None
+    discontinued_state: Literal["active", "discontinued"] = "active"
+    sales_owned_fields: str | None = None
+    production_owned_fields: str | None = None
+
+
 class PriceAgreementCreate(BaseModel):
     customer_id: str
     item_id: str
@@ -36,3 +57,7 @@ class InventoryLedgerEntryCreate(BaseModel):
     quantity_precision: int = Field(ge=0, le=6)
     common_classification: str
     resulting_balance: Decimal
+
+
+class MigrationExceptionCorrection(BaseModel):
+    corrected_value: str
