@@ -8,9 +8,27 @@ from pydantic import BaseModel, Field
 class LegacyImportRequest(BaseModel):
     source_system: Literal["sales", "production", "accounting"]
     file_name: str
+    file_type: str
     file_format: Literal["csv", "fixed"]
-    declared_encoding: str
+    declared_encoding: str | None = None
     content_base64: str
+
+
+class ConversionSettingCreate(BaseModel):
+    source_system: Literal["sales", "production", "accounting"]
+    file_type: str
+    encoding: str
+
+
+class ItemCodeConvertRequest(BaseModel):
+    legacy_code: str
+
+
+class LegacyDateConvertRequest(BaseModel):
+    source_system: Literal["sales", "production", "accounting"]
+    value: str
+    century_flag: int | None = None
+    corrected_gregorian_year: int | None = None
 
 
 class CustomerCreate(BaseModel):
@@ -46,7 +64,7 @@ class PriceAgreementCreate(BaseModel):
 class InventoryMappingCreate(BaseModel):
     source_system: Literal["sales", "production"]
     source_classification: str
-    common_classification: str
+    common_classification: Literal["finished_goods", "work_in_process", "raw_materials", "subcontract_supplied"]
     conversion_rule: str
 
 
@@ -56,7 +74,7 @@ class InventoryLedgerEntryCreate(BaseModel):
     source_classification: str
     quantity: Decimal
     quantity_precision: int = Field(ge=0, le=6)
-    common_classification: str
+    common_classification: Literal["finished_goods", "work_in_process", "raw_materials", "subcontract_supplied"]
     resulting_balance: Decimal
 
 
