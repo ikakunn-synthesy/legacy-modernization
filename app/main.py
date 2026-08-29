@@ -30,7 +30,7 @@ from app.schemas import (
 )
 from app.services.importing import ImportDecodingError, decode_legacy_bytes
 
-app = FastAPI(title="Legacy Modernization API", version="0.1.2")
+app = FastAPI(title="Legacy Modernization API", version="0.1.3")
 
 
 @app.on_event("startup")
@@ -82,14 +82,13 @@ def create_import(payload: LegacyImportRequest, session: Session = Depends(get_s
             detail={"migration_exception_id": exception.id, "reason": exception.failure_reason},
         ) from exc
 
-    raw_lines = raw.splitlines() or [raw]
-    decoded_lines = decoded.text.splitlines() or [decoded.text]
-    for raw_line, standard_value in zip(raw_lines, decoded_lines, strict=True):
+    legacy_lines = decoded.text.splitlines() or [decoded.text]
+    for legacy_value in legacy_lines:
         session.add(
             ConversionRecord(
                 import_id=imported.id,
-                source_value=f"base64:{base64.b64encode(raw_line).decode('ascii')}",
-                standard_value=standard_value,
+                source_value=legacy_value,
+                standard_value=legacy_value,
                 conversion_rule=f"decode:{decoded.declared_encoding}->utf-8",
             )
         )
