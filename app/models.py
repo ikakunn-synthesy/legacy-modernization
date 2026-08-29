@@ -96,6 +96,20 @@ class InventoryClassificationConversion(Base):
     converted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class InventoryClassificationReview(Base):
+    __tablename__ = "inventory_classification_reviews"
+    __table_args__ = (UniqueConstraint("source_system", "source_transaction", name="uq_inventory_review_source"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    source_system: Mapped[str] = mapped_column(String(32), nullable=False)
+    source_transaction: Mapped[str] = mapped_column(String(128), nullable=False)
+    source_classification: Mapped[str] = mapped_column(String(64), nullable=False)
+    requested_common_classification: Mapped[str] = mapped_column(String(64), nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="review_required")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class InventoryLedgerEntry(Base):
     __tablename__ = "inventory_ledger_entries"
     __table_args__ = (UniqueConstraint("source_system", "source_transaction", name="uq_inventory_ledger_source"),)

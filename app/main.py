@@ -12,6 +12,7 @@ from app.models import (
     ConversionRecord,
     Customer,
     InventoryClassificationConversion,
+    InventoryClassificationReview,
     InventoryLedgerEntry,
     Item,
     LegacyFileImport,
@@ -29,7 +30,7 @@ from app.schemas import (
 )
 from app.services.importing import ImportDecodingError, decode_legacy_bytes
 
-app = FastAPI(title="Legacy Modernization API", version="0.1.1")
+app = FastAPI(title="Legacy Modernization API", version="0.1.2")
 
 
 @app.on_event("startup")
@@ -81,13 +82,14 @@ def create_import(payload: LegacyImportRequest, session: Session = Depends(get_s
             detail={"migration_exception_id": exception.id, "reason": exception.failure_reason},
         ) from exc
 
-    source_values = decoded.text.splitlines() or [decoded.text]
-    for source_value in source_values:
+    raw_lines = raw.splitlines() or [raw]
+    decoded_lines = decoded.text.splitlines() or [decoded.text]
+    for raw_line, standard_value in zip(raw_lines, decoded_lines, strict=True):
         session.add(
             ConversionRecord(
                 import_id=imported.id,
-                source_value=source_value,
-                standard_value=source_value,
+                source_value=f"base64:{base64.b64encode(raw_line).decode('ascii')}",
+                standard_value=standard_value,
                 conversion_rule=f"decode:{decoded.declared_encoding}->utf-8",
             )
         )
@@ -156,7 +158,23 @@ def create_inventory_ledger_entry(payload: InventoryLedgerEntryCreate, session: 
         )
     )
     if mapping is None or mapping.common_classification != payload.common_classification:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="No approved mapping exists for this source classification")
+        review = InventoryClassificationReview(
+            source_system=payload.source_system,
+            source_transaction=payload.source_transaction,
+            source_classification=payload.source_classification,
+            requested_common_classification=payload.common_classification,
+            reason="No approved inventory classification mapping exists",
+        )
+        session.add(review)
+        try:
+            session.commit()
+        except IntegrityError as exc:
+            session.rollback()
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="This inventory update is already recorded or marked for review") from exc
+        raise HTTPException(
+            status_code=status.HTTP_202_ACCEPTED,
+            detail={"review_id": review.id, "status": review.status},
+        )
     entry = InventoryLedgerEntry(**payload.model_dump())
     session.add(entry)
     try:
