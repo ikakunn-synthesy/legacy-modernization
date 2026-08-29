@@ -10,20 +10,29 @@ from app.database import Base
 
 class LegacyFileImport(Base):
     __tablename__ = "legacy_file_imports"
-
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
     source_system: Mapped[str] = mapped_column(String(32), nullable=False)
     file_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    file_type: Mapped[str] = mapped_column(String(64), nullable=False)
     file_format: Mapped[str] = mapped_column(String(16), nullable=False)
     declared_encoding: Mapped[str] = mapped_column(String(32), nullable=False)
     raw_content: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
     content_sha256: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="accepted")
     imported_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class ConversionSetting(Base):
+    __tablename__ = "conversion_settings"
+    __table_args__ = (UniqueConstraint("source_system", "file_type", name="uq_conversion_setting_scope"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    source_system: Mapped[str] = mapped_column(String(32), nullable=False)
+    file_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    encoding: Mapped[str] = mapped_column(String(32), nullable=False)
 
 
 class ConversionRecord(Base):
     __tablename__ = "conversion_records"
-
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
     import_id: Mapped[str] = mapped_column(ForeignKey("legacy_file_imports.id"), nullable=False)
     source_value: Mapped[str] = mapped_column(Text, nullable=False)
@@ -34,7 +43,6 @@ class ConversionRecord(Base):
 
 class MigrationException(Base):
     __tablename__ = "migration_exceptions"
-
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
     import_id: Mapped[str] = mapped_column(ForeignKey("legacy_file_imports.id"), nullable=False)
     source_record: Mapped[str] = mapped_column(Text, nullable=False)
@@ -44,9 +52,16 @@ class MigrationException(Base):
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
+class ItemCodeCorrespondence(Base):
+    __tablename__ = "item_code_correspondences"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    legacy_code: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    standard_identifier: Mapped[str | None] = mapped_column(String(10))
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="mapped")
+
+
 class Customer(Base):
     __tablename__ = "customers"
-
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     sales_terms: Mapped[str | None] = mapped_column(Text)
@@ -57,7 +72,6 @@ class Customer(Base):
 
 class Item(Base):
     __tablename__ = "items"
-
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     classification: Mapped[str] = mapped_column(String(64), nullable=False)
     pricing: Mapped[Decimal | None] = mapped_column(Numeric(15, 2))
@@ -72,7 +86,6 @@ class Item(Base):
 class PriceAgreement(Base):
     __tablename__ = "price_agreements"
     __table_args__ = (UniqueConstraint("customer_id", "item_id", "version", name="uq_price_agreement_version"),)
-
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
     customer_id: Mapped[str] = mapped_column(ForeignKey("customers.id"), nullable=False)
     item_id: Mapped[str] = mapped_column(ForeignKey("items.id"), nullable=False)
@@ -87,7 +100,6 @@ class PriceAgreement(Base):
 class InventoryClassificationConversion(Base):
     __tablename__ = "inventory_classification_conversions"
     __table_args__ = (UniqueConstraint("source_system", "source_classification", name="uq_inventory_classification_mapping"),)
-
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
     source_system: Mapped[str] = mapped_column(String(32), nullable=False)
     source_classification: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -99,7 +111,6 @@ class InventoryClassificationConversion(Base):
 class InventoryClassificationReview(Base):
     __tablename__ = "inventory_classification_reviews"
     __table_args__ = (UniqueConstraint("source_system", "source_transaction", name="uq_inventory_review_source"),)
-
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
     source_system: Mapped[str] = mapped_column(String(32), nullable=False)
     source_transaction: Mapped[str] = mapped_column(String(128), nullable=False)
@@ -113,7 +124,6 @@ class InventoryClassificationReview(Base):
 class InventoryLedgerEntry(Base):
     __tablename__ = "inventory_ledger_entries"
     __table_args__ = (UniqueConstraint("source_system", "source_transaction", name="uq_inventory_ledger_source"),)
-
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
     source_system: Mapped[str] = mapped_column(String(32), nullable=False)
     source_transaction: Mapped[str] = mapped_column(String(128), nullable=False)
