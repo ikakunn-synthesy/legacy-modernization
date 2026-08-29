@@ -2,7 +2,7 @@ from datetime import datetime
 from decimal import Decimal
 from uuid import uuid4
 
-from sqlalchemy import Date, DateTime, ForeignKey, Numeric, String, Text, UniqueConstraint, func
+from sqlalchemy import Date, DateTime, ForeignKey, LargeBinary, Numeric, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
@@ -16,6 +16,7 @@ class LegacyFileImport(Base):
     file_name: Mapped[str] = mapped_column(String(255), nullable=False)
     file_format: Mapped[str] = mapped_column(String(16), nullable=False)
     declared_encoding: Mapped[str] = mapped_column(String(32), nullable=False)
+    raw_content: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
     content_sha256: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
     imported_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
@@ -102,6 +103,7 @@ class InventoryLedgerEntry(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
     source_system: Mapped[str] = mapped_column(String(32), nullable=False)
     source_transaction: Mapped[str] = mapped_column(String(128), nullable=False)
+    source_classification: Mapped[str] = mapped_column(String(64), nullable=False)
     quantity: Mapped[Decimal] = mapped_column(Numeric(18, 3), nullable=False)
     quantity_precision: Mapped[int] = mapped_column(nullable=False)
     common_classification: Mapped[str] = mapped_column(String(64), nullable=False)

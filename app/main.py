@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.database import Base, engine, get_session
 from app.models import (
+    ConversionRecord,
     Customer,
     InventoryClassificationConversion,
     InventoryLedgerEntry,
@@ -28,7 +29,7 @@ from app.schemas import (
 )
 from app.services.importing import ImportDecodingError, decode_legacy_bytes
 
-app = FastAPI(title="Legacy Modernization API", version="0.1.0")
+app = FastAPI(title="Legacy Modernization API", version="0.1.1")
 
 
 @app.on_event("startup")
@@ -58,13 +59,14 @@ def create_import(payload: LegacyImportRequest, session: Session = Depends(get_s
         file_name=payload.file_name,
         file_format=payload.file_format,
         declared_encoding=payload.declared_encoding,
+        raw_content=raw,
         content_sha256=content_sha256,
     )
     session.add(imported)
     session.flush()
 
     try:
-        decode_legacy_bytes(raw, payload.declared_encoding)
+        decoded = decode_legacy_bytes(raw, payload.declared_encoding)
     except ImportDecodingError as exc:
         exception = MigrationException(
             import_id=imported.id,
@@ -79,6 +81,16 @@ def create_import(payload: LegacyImportRequest, session: Session = Depends(get_s
             detail={"migration_exception_id": exception.id, "reason": exception.failure_reason},
         ) from exc
 
+    source_values = decoded.text.splitlines() or [decoded.text]
+    for source_value in source_values:
+        session.add(
+            ConversionRecord(
+                import_id=imported.id,
+                source_value=source_value,
+                standard_value=source_value,
+                conversion_rule=f"decode:{decoded.declared_encoding}->utf-8",
+            )
+        )
     session.commit()
     return {"import_id": imported.id, "status": "accepted"}
 
@@ -140,11 +152,11 @@ def create_inventory_ledger_entry(payload: InventoryLedgerEntryCreate, session: 
     mapping = session.scalar(
         select(InventoryClassificationConversion).where(
             InventoryClassificationConversion.source_system == payload.source_system,
-            InventoryClassificationConversion.common_classification == payload.common_classification,
+            InventoryClassificationConversion.source_classification == payload.source_classification,
         )
     )
-    if mapping is None:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="No approved inventory classification mapping exists")
+    if mapping is None or mapping.common_classification != payload.common_classification:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="No approved mapping exists for this source classification")
     entry = InventoryLedgerEntry(**payload.model_dump())
     session.add(entry)
     try:

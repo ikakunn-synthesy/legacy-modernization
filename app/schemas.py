@@ -53,6 +53,7 @@ class InventoryMappingCreate(BaseModel):
 class InventoryLedgerEntryCreate(BaseModel):
     source_system: Literal["sales", "production"]
     source_transaction: str
+    source_classification: str
     quantity: Decimal
     quantity_precision: int = Field(ge=0, le=6)
     common_classification: str
