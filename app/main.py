@@ -5,12 +5,13 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.database import Base, engine, get_session
-from app.models import AllocationRecord, Customer, InventoryClassificationConversion, Item, Order, OrderDetail, PriceAgreement, WarehouseInventory
+from app.models import Customer, InventoryClassificationConversion, Item, Order, OrderDetail, PriceAgreement, WarehouseInventory
 from app.schemas import AllocationCancellationRequest, AllocationRequest, CustomerCreate, InventoryBalanceUpdate, InventoryMappingCreate, ItemCreate, OrderCreate, PriceAgreementCreate
 from app.services.allocation import allocate_detail, cancel_allocations, reallocate_awaiting_details
+from app.services.inventory_ledger import record_inventory_update
 from app.services.pricing import resolve_price
 
-app = FastAPI(title="Legacy Modernization API", version="0.4.1")
+app = FastAPI(title="Legacy Modernization API", version="0.4.2")
 
 
 @app.on_event("startup")
@@ -118,15 +119,25 @@ def update_inventory_balance(payload: InventoryBalanceUpdate, session: Session =
     if session.get(Item, payload.item_id) is None:
         raise HTTPException(status_code=422, detail="Item does not exist")
     balance = session.scalar(select(WarehouseInventory).where(WarehouseInventory.warehouse == payload.warehouse, WarehouseInventory.item_id == payload.item_id))
+    current = balance.available_quantity if balance else Decimal("0")
+    resulting_balance = current + payload.quantity_change
+    if resulting_balance < 0:
+        raise HTTPException(status_code=422, detail="Inventory cannot become negative")
+    if not record_inventory_update(
+        session,
+        source_system=payload.source_system,
+        source_transaction=payload.source_transaction,
+        source_classification=payload.source_classification,
+        quantity=payload.quantity_change,
+        resulting_balance=resulting_balance,
+    ):
+        session.commit()
+        raise HTTPException(status_code=202, detail="Inventory update requires classification review")
     if balance is None:
-        if payload.quantity_change < 0:
-            raise HTTPException(status_code=422, detail="Inventory cannot become negative")
-        balance = WarehouseInventory(warehouse=payload.warehouse, item_id=payload.item_id, available_quantity=payload.quantity_change)
+        balance = WarehouseInventory(warehouse=payload.warehouse, item_id=payload.item_id, available_quantity=resulting_balance)
         session.add(balance)
     else:
-        if balance.available_quantity + payload.quantity_change < 0:
-            raise HTTPException(status_code=422, detail="Inventory cannot become negative")
-        balance.available_quantity += payload.quantity_change
+        balance.available_quantity = resulting_balance
     reallocated = reallocate_awaiting_details(session) if payload.quantity_change > 0 else []
     session.commit()
     return {"warehouse": balance.warehouse, "item_id": balance.item_id, "available_quantity": str(balance.available_quantity), "reallocated_detail_ids": reallocated}

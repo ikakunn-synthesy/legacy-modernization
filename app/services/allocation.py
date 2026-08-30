@@ -3,20 +3,22 @@ from decimal import Decimal
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.models import AllocationRecord, InventoryClassificationConversion, InventoryClassificationReview, InventoryLedgerEntry, OrderDetail, WarehouseInventory
+from app.models import AllocationRecord, OrderDetail, WarehouseInventory
+from app.services.inventory_ledger import record_inventory_update
 
 
 SOURCE_CLASSIFICATION = "finished_goods"
 
 
 def _record_ledger_entry(session: Session, detail: OrderDetail, warehouse: str, quantity: Decimal, action: str, balance: Decimal) -> bool:
-    source_transaction = f"allocation:{detail.id}:{warehouse}:{action}"
-    mapping = session.scalar(select(InventoryClassificationConversion).where(InventoryClassificationConversion.source_system == "sales", InventoryClassificationConversion.source_classification == SOURCE_CLASSIFICATION))
-    if mapping is None:
-        session.add(InventoryClassificationReview(source_system="sales", source_transaction=source_transaction, source_classification=SOURCE_CLASSIFICATION, requested_common_classification="finished_goods", reason="No approved inventory classification mapping exists"))
-        return False
-    session.add(InventoryLedgerEntry(source_system="sales", source_transaction=source_transaction, source_classification=SOURCE_CLASSIFICATION, quantity=quantity, quantity_precision=3, common_classification=mapping.common_classification, resulting_balance=balance))
-    return True
+    return record_inventory_update(
+        session,
+        source_system="sales",
+        source_transaction=f"allocation:{detail.id}:{warehouse}:{action}",
+        source_classification=SOURCE_CLASSIFICATION,
+        quantity=quantity,
+        resulting_balance=balance,
+    )
 
 
 def allocate_detail(session: Session, detail: OrderDetail) -> list[AllocationRecord]:
@@ -43,9 +45,7 @@ def allocate_detail(session: Session, detail: OrderDetail) -> list[AllocationRec
         session.add(record)
         records.append(record)
     if remaining > 0:
-        record = AllocationRecord(order_detail_id=detail.id, warehouse=detail.warehouse, allocated_quantity=Decimal("0"), shortage_quantity=remaining, state="awaiting_arrival", action="shortage_recorded")
-        session.add(record)
-        records.append(record)
+        session.add(AllocationRecord(order_detail_id=detail.id, warehouse=detail.warehouse, allocated_quantity=Decimal("0"), shortage_quantity=remaining, state="awaiting_arrival", action="shortage_recorded"))
     detail.state = "allocated" if remaining == 0 else "partially_allocated_awaiting_arrival" if allocated_total else "awaiting_arrival"
     return records
 
