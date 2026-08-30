@@ -3,7 +3,20 @@ from decimal import Decimal
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.models import AllocationRecord, OrderDetail, WarehouseInventory
+from app.models import AllocationRecord, InventoryClassificationConversion, InventoryClassificationReview, InventoryLedgerEntry, OrderDetail, WarehouseInventory
+
+
+SOURCE_CLASSIFICATION = "finished_goods"
+
+
+def _record_ledger_entry(session: Session, detail: OrderDetail, warehouse: str, quantity: Decimal, action: str, balance: Decimal) -> bool:
+    source_transaction = f"allocation:{detail.id}:{warehouse}:{action}"
+    mapping = session.scalar(select(InventoryClassificationConversion).where(InventoryClassificationConversion.source_system == "sales", InventoryClassificationConversion.source_classification == SOURCE_CLASSIFICATION))
+    if mapping is None:
+        session.add(InventoryClassificationReview(source_system="sales", source_transaction=source_transaction, source_classification=SOURCE_CLASSIFICATION, requested_common_classification="finished_goods", reason="No approved inventory classification mapping exists"))
+        return False
+    session.add(InventoryLedgerEntry(source_system="sales", source_transaction=source_transaction, source_classification=SOURCE_CLASSIFICATION, quantity=quantity, quantity_precision=3, common_classification=mapping.common_classification, resulting_balance=balance))
+    return True
 
 
 def allocate_detail(session: Session, detail: OrderDetail) -> list[AllocationRecord]:
@@ -20,6 +33,9 @@ def allocate_detail(session: Session, detail: OrderDetail) -> list[AllocationRec
         if remaining <= 0:
             break
         allocated = min(row.available_quantity, remaining)
+        if not _record_ledger_entry(session, detail, row.warehouse, -allocated, "allocate", row.available_quantity - allocated):
+            detail.state = "inventory_classification_review"
+            return records
         row.available_quantity -= allocated
         remaining -= allocated
         allocated_total += allocated
@@ -36,11 +52,7 @@ def allocate_detail(session: Session, detail: OrderDetail) -> list[AllocationRec
 
 def reallocate_awaiting_details(session: Session) -> list[str]:
     details = list(session.scalars(select(OrderDetail).where(OrderDetail.state.in_(["awaiting_arrival", "partially_allocated_awaiting_arrival"])).order_by(OrderDetail.delivery_date, OrderDetail.id)))
-    changed = []
-    for detail in details:
-        if allocate_detail(session, detail):
-            changed.append(detail.id)
-    return changed
+    return [detail.id for detail in details if allocate_detail(session, detail)]
 
 
 def cancel_allocations(session: Session, detail: OrderDetail) -> list[AllocationRecord]:
@@ -53,8 +65,9 @@ def cancel_allocations(session: Session, detail: OrderDetail) -> list[Allocation
             break
         quantity = min(allocation.allocated_quantity, remaining_to_return)
         balance = session.scalar(select(WarehouseInventory).where(WarehouseInventory.warehouse == allocation.warehouse, WarehouseInventory.item_id == detail.item_id))
-        if balance:
-            balance.available_quantity += quantity
+        if balance is None or not _record_ledger_entry(session, detail, allocation.warehouse, quantity, "return", balance.available_quantity + quantity):
+            continue
+        balance.available_quantity += quantity
         returned = AllocationRecord(order_detail_id=detail.id, warehouse=allocation.warehouse, allocated_quantity=quantity, shortage_quantity=Decimal("0"), state="cancelled", action="returned")
         session.add(returned)
         returns.append(returned)

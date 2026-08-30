@@ -74,7 +74,7 @@ class OrderDetail(Base):
     amount: Mapped[Decimal | None] = mapped_column(Numeric(15, 2))
     delivery_date: Mapped[date] = mapped_column(Date, nullable=False)
     warehouse: Mapped[str] = mapped_column(String(64), nullable=False)
-    state: Mapped[str] = mapped_column(String(24), nullable=False)
+    state: Mapped[str] = mapped_column(String(32), nullable=False)
     price_basis_type: Mapped[str | None] = mapped_column(String(32))
     price_agreement_version: Mapped[int | None] = mapped_column()
     manual_difference_reason: Mapped[str | None] = mapped_column(Text)
@@ -100,3 +100,41 @@ class AllocationRecord(Base):
     state: Mapped[str] = mapped_column(String(24), nullable=False)
     action: Mapped[str] = mapped_column(String(24), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class InventoryClassificationConversion(Base):
+    __tablename__ = "inventory_classification_conversions"
+    __table_args__ = (UniqueConstraint("source_system", "source_classification", name="uq_inventory_classification_mapping"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    source_system: Mapped[str] = mapped_column(String(32), nullable=False)
+    source_classification: Mapped[str] = mapped_column(String(64), nullable=False)
+    common_classification: Mapped[str] = mapped_column(String(64), nullable=False)
+    conversion_rule: Mapped[str] = mapped_column(String(128), nullable=False)
+    converted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class InventoryClassificationReview(Base):
+    __tablename__ = "inventory_classification_reviews"
+    __table_args__ = (UniqueConstraint("source_system", "source_transaction", name="uq_inventory_review_source"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    source_system: Mapped[str] = mapped_column(String(32), nullable=False)
+    source_transaction: Mapped[str] = mapped_column(String(128), nullable=False)
+    source_classification: Mapped[str] = mapped_column(String(64), nullable=False)
+    requested_common_classification: Mapped[str] = mapped_column(String(64), nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="review_required")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class InventoryLedgerEntry(Base):
+    __tablename__ = "inventory_ledger_entries"
+    __table_args__ = (UniqueConstraint("source_system", "source_transaction", name="uq_inventory_ledger_source"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    source_system: Mapped[str] = mapped_column(String(32), nullable=False)
+    source_transaction: Mapped[str] = mapped_column(String(128), nullable=False)
+    source_classification: Mapped[str] = mapped_column(String(64), nullable=False)
+    quantity: Mapped[Decimal] = mapped_column(Numeric(18, 3), nullable=False)
+    quantity_precision: Mapped[int] = mapped_column(nullable=False, default=3)
+    common_classification: Mapped[str] = mapped_column(String(64), nullable=False)
+    resulting_balance: Mapped[Decimal] = mapped_column(Numeric(18, 3), nullable=False)
+    recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
