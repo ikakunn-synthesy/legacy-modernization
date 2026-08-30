@@ -1,42 +1,16 @@
-import base64
-import hashlib
 from datetime import datetime, timezone
+from decimal import Decimal
 
 from fastapi import Depends, FastAPI, HTTPException, status
-from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.database import Base, engine, get_session
-from app.models import (
-    ConversionRecord,
-    ConversionSetting,
-    Customer,
-    InventoryClassificationConversion,
-    InventoryClassificationReview,
-    InventoryLedgerEntry,
-    Item,
-    ItemCodeCorrespondence,
-    LegacyFileImport,
-    MigrationException,
-    PriceAgreement,
-)
-from app.schemas import (
-    ConversionSettingCreate,
-    CustomerCreate,
-    InventoryLedgerEntryCreate,
-    InventoryMappingCreate,
-    ItemCodeConvertRequest,
-    ItemCreate,
-    LegacyDateConvertRequest,
-    LegacyImportRequest,
-    MigrationExceptionCorrection,
-    PriceAgreementCreate,
-)
-from app.services.importing import ImportDecodingError, decode_legacy_bytes
-from app.services.standardization import accounting_date_to_utc, production_date_to_utc, sales_date_to_utc, standard_item_identifier
+from app.models import Customer, Item, Order, OrderDetail, PriceAgreement
+from app.schemas import CustomerCreate, ItemCreate, OrderCreate, PriceAgreementCreate
+from app.services.pricing import resolve_price
 
-app = FastAPI(title="Legacy Modernization API", version="0.2.0")
+app = FastAPI(title="Legacy Modernization API", version="0.3.0")
 
 
 @app.on_event("startup")
@@ -49,102 +23,15 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
-@app.post("/conversion-settings", status_code=status.HTTP_201_CREATED)
-def save_conversion_setting(payload: ConversionSettingCreate, session: Session = Depends(get_session)) -> dict[str, str]:
-    setting = session.scalar(select(ConversionSetting).where(ConversionSetting.source_system == payload.source_system, ConversionSetting.file_type == payload.file_type))
-    if setting is None:
-        setting = ConversionSetting(**payload.model_dump())
-        session.add(setting)
-    else:
-        setting.encoding = payload.encoding
-    session.commit()
-    return {"id": setting.id, "encoding": setting.encoding}
-
-
-@app.post("/imports", status_code=status.HTTP_201_CREATED)
-def create_import(payload: LegacyImportRequest, session: Session = Depends(get_session)) -> dict[str, str]:
-    try:
-        raw = base64.b64decode(payload.content_base64, validate=True)
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="The import content is not valid Base64") from exc
-
-    content_sha256 = hashlib.sha256(raw).hexdigest()
-    existing = session.scalar(select(LegacyFileImport).where(LegacyFileImport.content_sha256 == content_sha256))
-    if existing:
-        return {"import_id": existing.id, "status": "duplicate"}
-
-    setting = session.scalar(select(ConversionSetting).where(ConversionSetting.source_system == payload.source_system, ConversionSetting.file_type == payload.file_type))
-    encoding = payload.declared_encoding or (setting.encoding if setting else None)
-    if encoding is None:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="No encoding default exists for this source system and file type")
-
-    imported = LegacyFileImport(source_system=payload.source_system, file_name=payload.file_name, file_type=payload.file_type, file_format=payload.file_format, declared_encoding=encoding, raw_content=raw, content_sha256=content_sha256)
-    session.add(imported)
-    session.flush()
-    try:
-        decoded = decode_legacy_bytes(raw, encoding)
-    except ImportDecodingError as exc:
-        imported.status = "pending_encoding"
-        exception = MigrationException(import_id=imported.id, source_record=payload.file_name, failure_reason=str(exc), status="pending_encoding")
-        session.add(exception)
-        session.commit()
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail={"migration_exception_id": exception.id, "reason": exception.failure_reason, "alternative_encodings": ["utf-8", "cp932", "shift_jis", "euc_jp"]}) from exc
-
-    if payload.declared_encoding and (setting is None or setting.encoding != encoding):
-        if setting is None:
-            session.add(ConversionSetting(source_system=payload.source_system, file_type=payload.file_type, encoding=encoding))
-        else:
-            setting.encoding = encoding
-
-    for legacy_value in decoded.text.splitlines() or [decoded.text]:
-        session.add(ConversionRecord(import_id=imported.id, source_value=legacy_value, standard_value=legacy_value, conversion_rule=f"decode:{decoded.declared_encoding}->utf-8"))
-    session.commit()
-    return {"import_id": imported.id, "status": "accepted"}
-
-
-@app.post("/item-code-correspondences", status_code=status.HTTP_201_CREATED)
-def convert_item_code(payload: ItemCodeConvertRequest, session: Session = Depends(get_session)) -> dict[str, str | None]:
-    existing = session.scalar(select(ItemCodeCorrespondence).where(ItemCodeCorrespondence.legacy_code == payload.legacy_code))
-    if existing:
-        return {"legacy_code": existing.legacy_code, "standard_identifier": existing.standard_identifier, "status": existing.status}
-    try:
-        identifier = standard_item_identifier(payload.legacy_code)
-        collision = session.scalar(select(ItemCodeCorrespondence).where(ItemCodeCorrespondence.standard_identifier == identifier))
-        item = ItemCodeCorrespondence(legacy_code=payload.legacy_code, standard_identifier=identifier, status="review_required" if collision else "mapped")
-    except ValueError:
-        item = ItemCodeCorrespondence(legacy_code=payload.legacy_code, standard_identifier=None, status="unverified")
-    session.add(item)
-    session.commit()
-    return {"legacy_code": item.legacy_code, "standard_identifier": item.standard_identifier, "status": item.status}
-
-
-@app.post("/legacy-dates/convert")
-def convert_legacy_date(payload: LegacyDateConvertRequest) -> dict[str, str]:
-    try:
-        if payload.source_system == "sales":
-            if payload.century_flag is None:
-                raise ValueError("Sales date requires century_flag")
-            standard_value = sales_date_to_utc(payload.value, payload.century_flag)
-        elif payload.source_system == "production":
-            standard_value = production_date_to_utc(payload.value)
-        else:
-            if payload.corrected_gregorian_year is None:
-                raise ValueError("Accounting-era date requires corrected_gregorian_year")
-            standard_value = accounting_date_to_utc(f"{payload.corrected_gregorian_year:04d}{payload.value[-4:]}")
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
-    return {"standard_value": standard_value}
-
-
 @app.post("/customers", status_code=status.HTTP_201_CREATED)
 def create_customer(payload: CustomerCreate, session: Session = Depends(get_session)) -> dict[str, str]:
     customer = Customer(**payload.model_dump())
     session.add(customer)
     try:
         session.commit()
-    except IntegrityError as exc:
+    except Exception as exc:
         session.rollback()
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Customer already exists") from exc
+        raise HTTPException(status_code=409, detail="Customer already exists") from exc
     return {"id": customer.id}
 
 
@@ -154,64 +41,65 @@ def create_item(payload: ItemCreate, session: Session = Depends(get_session)) ->
     session.add(item)
     try:
         session.commit()
-    except IntegrityError as exc:
+    except Exception as exc:
         session.rollback()
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Item already exists") from exc
+        raise HTTPException(status_code=409, detail="Item already exists") from exc
     return {"id": item.id}
 
 
 @app.post("/price-agreements", status_code=status.HTTP_201_CREATED)
 def create_price_agreement(payload: PriceAgreementCreate, session: Session = Depends(get_session)) -> dict[str, str | int]:
     if session.get(Customer, payload.customer_id) is None or session.get(Item, payload.item_id) is None:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Customer and item must exist before a price agreement is created")
-    latest_version = session.scalar(select(PriceAgreement.version).where(PriceAgreement.customer_id == payload.customer_id, PriceAgreement.item_id == payload.item_id).order_by(PriceAgreement.version.desc()).limit(1))
+        raise HTTPException(status_code=422, detail="Customer and item must exist before a price agreement is created")
+    latest_version = session.scalar(select(func.max(PriceAgreement.version)).where(PriceAgreement.customer_id == payload.customer_id, PriceAgreement.item_id == payload.item_id))
     agreement = PriceAgreement(**payload.model_dump(), version=(latest_version or 0) + 1)
     session.add(agreement)
     session.commit()
     return {"id": agreement.id, "version": agreement.version}
 
 
-@app.post("/inventory-classification-mappings", status_code=status.HTTP_201_CREATED)
-def create_inventory_mapping(payload: InventoryMappingCreate, session: Session = Depends(get_session)) -> dict[str, str]:
-    mapping = InventoryClassificationConversion(**payload.model_dump())
-    session.add(mapping)
-    try:
-        session.commit()
-    except IntegrityError as exc:
-        session.rollback()
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="A mapping already exists for this source classification") from exc
-    return {"id": mapping.id}
+@app.post("/orders", status_code=status.HTTP_201_CREATED)
+def create_order(payload: OrderCreate, session: Session = Depends(get_session)) -> dict[str, object]:
+    if session.get(Customer, payload.customer_id) is None:
+        raise HTTPException(status_code=422, detail="Customer does not exist")
+    if payload.delivery_date < payload.order_date or any(detail.delivery_date < payload.order_date for detail in payload.details):
+        raise HTTPException(status_code=422, detail="Delivery date cannot precede order date")
+    if any(session.get(Item, detail.item_id) is None for detail in payload.details):
+        raise HTTPException(status_code=422, detail="Each order item must exist")
 
+    resolved_details = []
+    hold = False
+    for detail in payload.details:
+        resolved = resolve_price(session, payload.customer_id, detail.item_id, detail.quantity, payload.order_date)
+        if detail.manual_price is not None:
+            if resolved.price != detail.manual_price and not detail.manual_difference_reason:
+                raise HTTPException(status_code=422, detail="Manual price requires a difference reason")
+            price, basis, version = detail.manual_price, "manual", resolved.agreement_version
+        else:
+            price, basis, version = resolved.price, resolved.basis_type, resolved.agreement_version
+        if price is None:
+            hold = True
+        resolved_details.append((detail, price, basis, version))
 
-@app.post("/inventory-ledger-entries", status_code=status.HTTP_201_CREATED)
-def create_inventory_ledger_entry(payload: InventoryLedgerEntryCreate, session: Session = Depends(get_session)) -> dict[str, str]:
-    mapping = session.scalar(select(InventoryClassificationConversion).where(InventoryClassificationConversion.source_system == payload.source_system, InventoryClassificationConversion.source_classification == payload.source_classification))
-    if mapping is None or mapping.common_classification != payload.common_classification:
-        review = InventoryClassificationReview(source_system=payload.source_system, source_transaction=payload.source_transaction, source_classification=payload.source_classification, requested_common_classification=payload.common_classification, reason="No approved inventory classification mapping exists")
-        session.add(review)
-        try:
-            session.commit()
-        except IntegrityError as exc:
-            session.rollback()
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="This inventory update is already recorded or marked for review") from exc
-        raise HTTPException(status_code=status.HTTP_202_ACCEPTED, detail={"review_id": review.id, "status": review.status})
-    entry = InventoryLedgerEntry(**payload.model_dump())
-    session.add(entry)
-    try:
-        session.commit()
-    except IntegrityError as exc:
-        session.rollback()
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="An inventory entry already exists for this source transaction") from exc
-    return {"id": entry.id}
-
-
-@app.post("/migration-exceptions/{exception_id}/correct")
-def correct_migration_exception(exception_id: str, payload: MigrationExceptionCorrection, session: Session = Depends(get_session)) -> dict[str, str]:
-    exception = session.get(MigrationException, exception_id)
-    if exception is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Migration exception not found")
-    exception.corrected_value = payload.corrected_value
-    exception.status = "corrected"
-    exception.resolved_at = datetime.now(timezone.utc)
+    next_number = (session.scalar(select(func.max(Order.order_number))) or 0) + 1
+    order = Order(order_number=next_number, customer_id=payload.customer_id, order_date=payload.order_date, delivery_date=payload.delivery_date, channel=payload.channel, state="price_unset_hold" if hold else "ready", total_amount=Decimal("0"))
+    session.add(order)
+    session.flush()
+    total = Decimal("0")
+    for line_number, (detail, price, basis, version) in enumerate(resolved_details, start=1):
+        amount = price * detail.quantity if price is not None else None
+        if amount is not None:
+            total += amount
+        session.add(OrderDetail(order_id=order.id, line_number=line_number, item_id=detail.item_id, quantity=detail.quantity, unit_price=price, amount=amount, delivery_date=detail.delivery_date, warehouse=detail.warehouse, state="price_unset_hold" if price is None else "ready", price_basis_type=basis, price_agreement_version=version, manual_difference_reason=detail.manual_difference_reason))
+    order.total_amount = total
     session.commit()
-    return {"id": exception.id, "status": exception.status}
+    return {"id": order.id, "order_number": order.order_number, "state": order.state, "total_amount": str(order.total_amount)}
+
+
+@app.get("/orders/{order_number}")
+def get_order(order_number: int, session: Session = Depends(get_session)) -> dict[str, object]:
+    order = session.scalar(select(Order).where(Order.order_number == order_number))
+    if order is None:
+        raise HTTPException(status_code=404, detail="Order not found")
+    details = list(session.scalars(select(OrderDetail).where(OrderDetail.order_id == order.id).order_by(OrderDetail.line_number)))
+    return {"order_number": order.order_number, "state": order.state, "total_amount": str(order.total_amount), "details": [{"line_number": d.line_number, "item_id": d.item_id, "quantity": str(d.quantity), "unit_price": str(d.unit_price) if d.unit_price is not None else None, "amount": str(d.amount) if d.amount is not None else None, "state": d.state, "price_basis_type": d.price_basis_type, "price_agreement_version": d.price_agreement_version, "manual_difference_reason": d.manual_difference_reason} for d in details]}
