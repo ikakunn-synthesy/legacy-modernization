@@ -70,6 +70,13 @@ class InventoryBalanceUpdate(BaseModel):
     quantity_change: Decimal
 
 
+class InventoryMappingCreate(BaseModel):
+    source_system: Literal["sales", "production"]
+    source_classification: str
+    common_classification: Literal["finished_goods", "work_in_process", "raw_materials", "subcontract_supplied"]
+    conversion_rule: str
+
+
 class AllocationRequest(BaseModel):
     order_detail_id: str
 

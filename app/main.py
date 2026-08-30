@@ -1,4 +1,3 @@
-from datetime import date
 from decimal import Decimal
 
 from fastapi import Depends, FastAPI, HTTPException, status
@@ -6,12 +5,12 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.database import Base, engine, get_session
-from app.models import AllocationRecord, Customer, Item, Order, OrderDetail, PriceAgreement, WarehouseInventory
-from app.schemas import AllocationCancellationRequest, AllocationRequest, CustomerCreate, InventoryBalanceUpdate, ItemCreate, OrderCreate, PriceAgreementCreate
+from app.models import AllocationRecord, Customer, InventoryClassificationConversion, Item, Order, OrderDetail, PriceAgreement, WarehouseInventory
+from app.schemas import AllocationCancellationRequest, AllocationRequest, CustomerCreate, InventoryBalanceUpdate, InventoryMappingCreate, ItemCreate, OrderCreate, PriceAgreementCreate
 from app.services.allocation import allocate_detail, cancel_allocations, reallocate_awaiting_details
 from app.services.pricing import resolve_price
 
-app = FastAPI(title="Legacy Modernization API", version="0.4.0")
+app = FastAPI(title="Legacy Modernization API", version="0.4.1")
 
 
 @app.on_event("startup")
@@ -59,6 +58,18 @@ def create_price_agreement(payload: PriceAgreementCreate, session: Session = Dep
     return {"id": agreement.id, "version": agreement.version}
 
 
+@app.post("/inventory-classification-mappings", status_code=status.HTTP_201_CREATED)
+def create_inventory_mapping(payload: InventoryMappingCreate, session: Session = Depends(get_session)) -> dict[str, str]:
+    mapping = InventoryClassificationConversion(**payload.model_dump())
+    session.add(mapping)
+    try:
+        session.commit()
+    except Exception as exc:
+        session.rollback()
+        raise HTTPException(status_code=409, detail="A mapping already exists for this source classification") from exc
+    return {"id": mapping.id}
+
+
 @app.post("/orders", status_code=status.HTTP_201_CREATED)
 def create_order(payload: OrderCreate, session: Session = Depends(get_session)) -> dict[str, object]:
     if session.get(Customer, payload.customer_id) is None:
@@ -91,6 +102,15 @@ def create_order(payload: OrderCreate, session: Session = Depends(get_session)) 
     order.total_amount = total
     session.commit()
     return {"id": order.id, "order_number": order.order_number, "state": order.state, "total_amount": str(order.total_amount)}
+
+
+@app.get("/orders/{order_number}")
+def get_order(order_number: int, session: Session = Depends(get_session)) -> dict[str, object]:
+    order = session.scalar(select(Order).where(Order.order_number == order_number))
+    if order is None:
+        raise HTTPException(status_code=404, detail="Order not found")
+    details = list(session.scalars(select(OrderDetail).where(OrderDetail.order_id == order.id).order_by(OrderDetail.line_number)))
+    return {"order_number": order.order_number, "state": order.state, "total_amount": str(order.total_amount), "details": [{"line_number": detail.line_number, "item_id": detail.item_id, "quantity": str(detail.quantity), "unit_price": str(detail.unit_price) if detail.unit_price is not None else None, "amount": str(detail.amount) if detail.amount is not None else None, "state": detail.state, "price_basis_type": detail.price_basis_type, "price_agreement_version": detail.price_agreement_version, "manual_difference_reason": detail.manual_difference_reason} for detail in details]}
 
 
 @app.post("/inventory/balances")
