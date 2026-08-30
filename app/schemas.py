@@ -68,6 +68,9 @@ class InventoryBalanceUpdate(BaseModel):
     warehouse: str
     item_id: str
     quantity_change: Decimal
+    source_system: Literal["sales", "production"]
+    source_transaction: str
+    source_classification: str
 
 
 class InventoryMappingCreate(BaseModel):
