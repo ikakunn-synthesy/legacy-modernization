@@ -67,6 +67,7 @@ class Customer(Base):
     sales_terms: Mapped[str | None] = mapped_column(Text)
     credit_limit: Mapped[Decimal | None] = mapped_column(Numeric(15, 2))
     tax_treatment: Mapped[str | None] = mapped_column(String(32))
+    customer_rank: Mapped[int | None] = mapped_column()
     state: Mapped[str] = mapped_column(String(16), nullable=False, default="active")
 
 
@@ -92,7 +93,10 @@ class PriceAgreement(Base):
     effective_from: Mapped[date] = mapped_column(Date, nullable=False)
     effective_to: Mapped[date] = mapped_column(Date, nullable=False)
     price: Mapped[Decimal] = mapped_column(Numeric(15, 2), nullable=False)
+    price_type: Mapped[str] = mapped_column(String(16), nullable=False, default="individual")
     campaign_classification: Mapped[str | None] = mapped_column(String(64))
+    minimum_quantity: Mapped[Decimal | None] = mapped_column(Numeric(18, 3))
+    customer_rank: Mapped[int | None] = mapped_column()
     version: Mapped[int] = mapped_column(nullable=False)
     changed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
@@ -100,7 +104,7 @@ class PriceAgreement(Base):
 class Order(Base):
     __tablename__ = "orders"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
-    order_number: Mapped[int] = mapped_column(nullable=False, unique=True, autoincrement=True)
+    order_number: Mapped[int] = mapped_column(nullable=False, unique=True)
     customer_id: Mapped[str] = mapped_column(ForeignKey("customers.id"), nullable=False)
     order_date: Mapped[date] = mapped_column(Date, nullable=False)
     delivery_date: Mapped[date] = mapped_column(Date, nullable=False)
