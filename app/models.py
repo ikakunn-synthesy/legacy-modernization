@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from uuid import uuid4
 
@@ -67,6 +67,7 @@ class Customer(Base):
     sales_terms: Mapped[str | None] = mapped_column(Text)
     credit_limit: Mapped[Decimal | None] = mapped_column(Numeric(15, 2))
     tax_treatment: Mapped[str | None] = mapped_column(String(32))
+    customer_rank: Mapped[int | None] = mapped_column()
     state: Mapped[str] = mapped_column(String(16), nullable=False, default="active")
 
 
@@ -89,12 +90,46 @@ class PriceAgreement(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
     customer_id: Mapped[str] = mapped_column(ForeignKey("customers.id"), nullable=False)
     item_id: Mapped[str] = mapped_column(ForeignKey("items.id"), nullable=False)
-    effective_from: Mapped[datetime] = mapped_column(Date, nullable=False)
-    effective_to: Mapped[datetime] = mapped_column(Date, nullable=False)
+    effective_from: Mapped[date] = mapped_column(Date, nullable=False)
+    effective_to: Mapped[date] = mapped_column(Date, nullable=False)
     price: Mapped[Decimal] = mapped_column(Numeric(15, 2), nullable=False)
+    price_type: Mapped[str] = mapped_column(String(16), nullable=False, default="individual")
     campaign_classification: Mapped[str | None] = mapped_column(String(64))
+    minimum_quantity: Mapped[Decimal | None] = mapped_column(Numeric(18, 3))
+    customer_rank: Mapped[int | None] = mapped_column()
     version: Mapped[int] = mapped_column(nullable=False)
     changed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class Order(Base):
+    __tablename__ = "orders"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    order_number: Mapped[int] = mapped_column(nullable=False, unique=True)
+    customer_id: Mapped[str] = mapped_column(ForeignKey("customers.id"), nullable=False)
+    order_date: Mapped[date] = mapped_column(Date, nullable=False)
+    delivery_date: Mapped[date] = mapped_column(Date, nullable=False)
+    channel: Mapped[str] = mapped_column(String(16), nullable=False)
+    state: Mapped[str] = mapped_column(String(24), nullable=False)
+    total_amount: Mapped[Decimal] = mapped_column(Numeric(15, 2), nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class OrderDetail(Base):
+    __tablename__ = "order_details"
+    __table_args__ = (UniqueConstraint("order_id", "line_number", name="uq_order_detail_line"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    order_id: Mapped[str] = mapped_column(ForeignKey("orders.id"), nullable=False)
+    line_number: Mapped[int] = mapped_column(nullable=False)
+    item_id: Mapped[str] = mapped_column(ForeignKey("items.id"), nullable=False)
+    quantity: Mapped[Decimal] = mapped_column(Numeric(18, 3), nullable=False)
+    unit_price: Mapped[Decimal | None] = mapped_column(Numeric(15, 2))
+    amount: Mapped[Decimal | None] = mapped_column(Numeric(15, 2))
+    delivery_date: Mapped[date] = mapped_column(Date, nullable=False)
+    warehouse: Mapped[str] = mapped_column(String(64), nullable=False)
+    state: Mapped[str] = mapped_column(String(24), nullable=False)
+    price_basis_type: Mapped[str | None] = mapped_column(String(32))
+    price_agreement_version: Mapped[int | None] = mapped_column()
+    manual_difference_reason: Mapped[str | None] = mapped_column(Text)
 
 
 class InventoryClassificationConversion(Base):
