@@ -55,8 +55,8 @@ def confirm_shipment_amount(shipment_detail_id: str, payload: ShipmentConfirmati
 @router.post("/shipment-details/{shipment_detail_id}/cancel")
 def cancel_shipment(shipment_detail_id: str, payload: ShipmentCancellationCreate, session: Session = Depends(get_session)) -> dict[str, str]:
     shipment_detail = session.get(ShipmentDetail, shipment_detail_id)
-    if shipment_detail is None or shipment_detail.sales_posting_state in {"eligible", "cancelled"}:
-        raise HTTPException(status_code=422, detail="Only unposted shipment details can be cancelled")
+    if shipment_detail is None or shipment_detail.sales_posting_state == "cancelled":
+        raise HTTPException(status_code=422, detail="Only active shipment details can be cancelled")
     order_detail = session.get(OrderDetail, shipment_detail.order_detail_id)
     balance = session.scalar(select(WarehouseInventory).where(WarehouseInventory.warehouse == shipment_detail.warehouse, WarehouseInventory.item_id == order_detail.item_id))
     current = balance.available_quantity if balance else Decimal("0")
