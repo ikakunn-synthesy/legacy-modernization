@@ -10,8 +10,11 @@ from app.schemas import AllocationCancellationRequest, AllocationRequest, Custom
 from app.services.allocation import allocate_detail, cancel_allocations, reallocate_awaiting_details
 from app.services.inventory_ledger import record_inventory_update
 from app.services.pricing import resolve_price
+from app.shipment_api import router as shipment_router
+from app import shipment_models  # Register shipment tables with SQLAlchemy metadata.
 
-app = FastAPI(title="Legacy Modernization API", version="0.4.2")
+app = FastAPI(title="Legacy Modernization API", version="0.5.0")
+app.include_router(shipment_router)
 
 
 @app.on_event("startup")
@@ -123,24 +126,16 @@ def update_inventory_balance(payload: InventoryBalanceUpdate, session: Session =
     resulting_balance = current + payload.quantity_change
     if resulting_balance < 0:
         raise HTTPException(status_code=422, detail="Inventory cannot become negative")
-    if not record_inventory_update(
-        session,
-        source_system=payload.source_system,
-        source_transaction=payload.source_transaction,
-        source_classification=payload.source_classification,
-        quantity=payload.quantity_change,
-        resulting_balance=resulting_balance,
-    ):
+    if not record_inventory_update(session, source_system=payload.source_system, source_transaction=payload.source_transaction, source_classification=payload.source_classification, quantity=payload.quantity_change, resulting_balance=resulting_balance):
         session.commit()
         raise HTTPException(status_code=202, detail="Inventory update requires classification review")
     if balance is None:
-        balance = WarehouseInventory(warehouse=payload.warehouse, item_id=payload.item_id, available_quantity=resulting_balance)
-        session.add(balance)
+        session.add(WarehouseInventory(warehouse=payload.warehouse, item_id=payload.item_id, available_quantity=resulting_balance))
     else:
         balance.available_quantity = resulting_balance
     reallocated = reallocate_awaiting_details(session) if payload.quantity_change > 0 else []
     session.commit()
-    return {"warehouse": balance.warehouse, "item_id": balance.item_id, "available_quantity": str(balance.available_quantity), "reallocated_detail_ids": reallocated}
+    return {"warehouse": payload.warehouse, "item_id": payload.item_id, "available_quantity": str(resulting_balance), "reallocated_detail_ids": reallocated}
 
 
 @app.post("/allocations")
