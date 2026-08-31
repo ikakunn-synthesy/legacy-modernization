@@ -9,6 +9,7 @@ from app.database import get_session
 from app.models import Order, OrderDetail, WarehouseInventory
 from app.schemas import ShipmentCancellationCreate, ShipmentConfirmationCreate, ShipmentCreate
 from app.shipment_models import Shipment, ShipmentConfirmation, ShipmentDetail
+from app.services.inventory_ledger import record_inventory_update
 from app.services.shipping import available_to_ship
 
 router = APIRouter()
@@ -33,8 +34,7 @@ def create_shipment(payload: ShipmentCreate, session: Session = Depends(get_sess
     session.flush()
     details = []
     for line, detail in prepared:
-        amount = line.shipped_quantity * detail.unit_price
-        shipment_detail = ShipmentDetail(shipment_id=shipment.id, order_detail_id=detail.id, warehouse=line.warehouse, shipped_quantity=line.shipped_quantity, unit_price=detail.unit_price, amount=amount)
+        shipment_detail = ShipmentDetail(shipment_id=shipment.id, order_detail_id=detail.id, warehouse=line.warehouse, shipped_quantity=line.shipped_quantity, unit_price=detail.unit_price, amount=line.shipped_quantity * detail.unit_price)
         session.add(shipment_detail)
         details.append(shipment_detail)
     session.commit()
@@ -57,11 +57,18 @@ def cancel_shipment(shipment_detail_id: str, payload: ShipmentCancellationCreate
     shipment_detail = session.get(ShipmentDetail, shipment_detail_id)
     if shipment_detail is None or shipment_detail.sales_posting_state in {"eligible", "cancelled"}:
         raise HTTPException(status_code=422, detail="Only unposted shipment details can be cancelled")
-    balance = session.scalar(select(WarehouseInventory).where(WarehouseInventory.warehouse == shipment_detail.warehouse, WarehouseInventory.item_id == session.get(OrderDetail, shipment_detail.order_detail_id).item_id))
+    order_detail = session.get(OrderDetail, shipment_detail.order_detail_id)
+    balance = session.scalar(select(WarehouseInventory).where(WarehouseInventory.warehouse == shipment_detail.warehouse, WarehouseInventory.item_id == order_detail.item_id))
+    current = balance.available_quantity if balance else Decimal("0")
+    resulting_balance = current + shipment_detail.shipped_quantity
+    if not record_inventory_update(session, source_system="sales", source_transaction=f"shipment:{shipment_detail.id}:cancel", source_classification="finished_goods", quantity=shipment_detail.shipped_quantity, resulting_balance=resulting_balance):
+        session.commit()
+        raise HTTPException(status_code=202, detail="Shipment cancellation requires classification review")
     if balance is None:
-        balance = WarehouseInventory(warehouse=shipment_detail.warehouse, item_id=session.get(OrderDetail, shipment_detail.order_detail_id).item_id, available_quantity=Decimal("0"))
+        balance = WarehouseInventory(warehouse=shipment_detail.warehouse, item_id=order_detail.item_id, available_quantity=resulting_balance)
         session.add(balance)
-    balance.available_quantity += shipment_detail.shipped_quantity
+    else:
+        balance.available_quantity = resulting_balance
     shipment_detail.sales_posting_state = "cancelled"
     shipment_detail.cancelled_at = datetime.now(timezone.utc)
     session.add(ShipmentConfirmation(shipment_detail_id=shipment_detail.id, confirmed_by=payload.cancelled_by, action="cancelled"))
